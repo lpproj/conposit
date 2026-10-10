@@ -1,0 +1,25 @@
+DEFSPEED - initialize PC-98 RSDRV with default configuration
+
+PC-98の標準RS232C(RS232C-0)をデフォルト設定で初期化するデバイスドライバ兼
+コマンドです。PC-98用MS-DOSのRSDRVが、使用前にSPPEDコマンドでの設定が必須
+らしいので、あまりにも面倒くさくなって作りました。
+
+用法
+----
+
+PC-98シリーズ用のMS-DOS（2.11以上）DEFSPEED.EXEをコマンドとして実行します。
+オプションは特にありません。
+
+    A:\> DEFSPEED
+
+CONFIG.SYSのDEVICE文で、デバイスドライバとして起動することも可能です。
+メモリに常駐はしません。RSDRV.SYSの直後に書いておくのがよいと思われます。
+
+    DEVICEHIGH=A:\DOS\RSDRV.SYS
+    DEVICE=A:\DEFSPEED.EXE
+
+
+免責
+----
+
+本プログラムは完全に無保証です。利用者の責任においてご利用ください。
