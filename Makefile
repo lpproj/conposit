@@ -41,14 +41,15 @@ LDFLAGS=op quiet format dos op caseexact op stack=256 disable 1172
 	$(AS) $(AFLAGS) -o $@ $<
 
 
-all: conposit.exe conpos_n.exe READMEsj.txt
+all: conposit.exe conpos_n.exe conpos_i.exe READMEsj.txt
 
-clean:
+clean: .SYMBOLIC
 	-$(RM_F) conposit.exe conposit.$(O)
 	-$(RM_F) conpos_n.exe conpos_n.$(O)
+	-$(RM_F) conpos_i.exe conpos_i.$(O)
 	-$(RM_F) READMEsj.txt nkf.out
 	-$(RM_F) *.err *.lst
-	@%quit	# return without error
+	@%quit				# return without error
 
 conposit.exe : conposit.$(O)
 	$(LD) $(LDFLAGS) name $@ file { $< }
@@ -58,6 +59,12 @@ conpos_n.exe : conpos_n.$(O)
 
 conpos_n.$(O) : conposit.asm
 	$(AS) $(AFLAGS) -DNEC98 -o $@ $<
+
+conpos_i.exe : conpos_i.$(O)
+	$(LD) $(LDFLAGS) name $@ file { $< }
+
+conpos_i.$(O) : conposit.asm
+	$(AS) $(AFLAGS) -DIBMPC -o $@ $<
 
 READMEsj.txt : READMEja.md
 	$(NKF_TOSJ) -O $< $@

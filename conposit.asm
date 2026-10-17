@@ -88,10 +88,18 @@ SEGMENT _TEXT
 
 dev_header:
 		dd	-1
+%ifdef IBMPC
+dev_attr	dw	8000h		; just a chardev, not a standard console
+%else
 dev_attr	dw	8013h		; stdin/stdout/int29h
+%endif
 		dw	Strategy
 dev_commands	dw	Init_Commands
+%ifdef IBMPC
+dev_name	db	'CON$$$$$'
+%else
 dev_name	db	'CON     '
+%endif
 dev_id		db	'$CONPOSIT'
 		db	'0'
 dev_id_bottom:
@@ -127,6 +135,8 @@ retry_aux_count	db	0		; 255=infinitely while aux output is in busy
 pass_csi6n	db	0		; report cursor position (ESC[6n)
 		db	'X'
 pass_xchar	db	0		; XON/XOFF
+		db	'J'
+home_after_clr	db	1		; move curpos to (0,0) after ESC[2J
 ;
 option_term	db	0, 0
 
@@ -141,6 +151,7 @@ condev_fallback:
 		push	es
 condev_fallback2:
 		call	call_orgcon_esbx
+condev_fallback_exit:
 		pop	es
 		pop	bx
 condev_retf:
@@ -151,6 +162,11 @@ Commands:
 		push	es
 		les	bx, [cs: reqhdr]
 		cmp	byte [es: bx + 2], 20
+%ifdef IBMPC
+		jne	condev_fallback2
+		mov	word [es: bx + 3], 8103h
+		jmp	short condev_fallback_exit
+%else ; not IBMPC
 		je	.unknown
 		cmp	byte [es: bx + 2], 12
 		ja	condev_fallback2
@@ -208,6 +224,8 @@ cmd_input_flush:
 
 %ifdef GENDOS
 cmd_nd:
+		cmp	byte [allow_aux_in], 0
+		je	call_orgcon_esbx
 		call	push_aux_to_kbuf
 		call	kbuf_peek
 		jc	call_orgcon_esbx
@@ -265,6 +283,7 @@ cmd_output_verify:
 cmd_output_flush:
 cmd_output_status:
 ;
+%endif; end of not defined IBMPC
 cmd_fallthru:
 call_orgcon_esbx:
 		push	si		; workaround for some driver(s)
@@ -275,6 +294,7 @@ call_orgcon_esbx:
 		pop	di
 		pop	si
 		ret
+
 
 call_aux_esbx:
 		test	word [cs: aux_strategy + 2], 0ffffh
@@ -471,51 +491,95 @@ new_29:
 new_29_to_aux:
 		pushf
 		call	far [cs: org_29]
-		cmp	byte [cs: pass_csi6n], 0
-		jne	.csi6n_end
-		push	si
-		mov	si, [cs: csi6n_index]
-		cmp	al, [cs: si + csi6n_str]
-		jne	.flush
-		inc	si
-		cmp	si, csi6n_str_end - csi6n_str
-		jb	.csi6n_l2
-		xor	si, si
-.csi6n_l2:
-		mov	[cs: csi6n_index], si
-		pop	si
-		iret
-.flush:
-		test	si, si
-		jz	.flushed
+;.put_aux:
+		push	bx
+		push	ds
+		push	cs
+		pop	ds
+		xor	bx, bx
+		cmp	bh, [pass_csi6n]	; is zero?
+		jne	.c6n_unmatch
+		mov	bl, [csi6n_index]
+		cmp	al, [bx + csi6n_str]
+		je	.c6n_match
+.c6n_unmatch:
+		mov	[csi6n_index], bh	; 0
+		jmp	short .c2j
+.c6n_match:
+		inc	bl
+		cmp	bl, (csi6n_str_end - csi6n_str)
+		jb	.c6n_match_l2
+		mov	[csi6n_index], bh	; 0
+		mov	[csi2j_index], bh
+		jmp	short .put_aux_exit
+.c6n_match_l2:
+		mov	[csi6n_index], bl
+.c2j:
+		cmp	bh, [home_after_clr]	; is zero?
+		je	.c2j_unmatch
+		mov	bl, [csi2j_index]
+		cmp	al, [bx + csi2j_str]
+		je	.c2j_match
+.c2j_unmatch:
+		test	bl, bl
+		jz	.c2j_unmatch_put_al
 		push	ax
 		push	cx
-		mov	cx, csi6n_str
-		xchg	cx, si
-.flush_lp:
-		cs lodsb
+		push	si
+		mov	si, csi2j_str
+		mov	cx, bx
+.c2j_unmatch_lp:
+		lodsb
 		call	aux_put
-		loop	.flush_lp
-		mov	[cs: csi6n_index], cx		; 0
+		loop	.c2j_unmatch_lp
+		pop	si
 		pop	cx
 		pop	ax
-.flushed:
-		pop	si
-.csi6n_end:
-		cmp	byte [cs: pass_xchar], 0
-		jne	.put
-		cmp	al, 17		; XON
-		je	.iret
-		cmp	al, 19		; XOFF
-		je	.iret
-.put:
+.c2j_unmatch_put_al:
+		mov	[csi2j_index], bh
+		cmp	bh, [pass_xchar]	; is zero?
+		je	.put_al
+		cmp	word [csi2j_index], 0
+		jne	.put_aux_exit		; csi2j_index!=0 || csi6n_index!= 0
+		cmp	al, 17			; XON
+		je	.put_aux_exit
+		cmp	al, 19			; XOFF
+		je	.put_aux_exit
+.put_al:
 		call	aux_put
-.iret:
+		jmp	short .put_aux_exit
+.c2j_match:
+		inc	bl
+		cmp	bl, (csi2j_str_end - csi2j_str)
+		jae	.c2j_clrhome
+		mov	[csi2j_index], bl
+		jmp	short .put_aux_exit
+.c2j_clrhome:
+		mov	[csi2j_index], bh	; 0
+		mov	bx, csi2j_str
+		push	ax
+.c2j_clrhome_lp:
+		mov	al, [bx]
+		call	aux_put
+		inc	bx
+		cmp	bx, csi2j_clrhome_str_end
+		jb	.c2j_clrhome_lp
+		pop	ax
+.put_aux_exit:
+		pop	ds
+		pop	bx
 		iret
 
+csi2j_str	db	1bh, '[2J'
+csi2j_str_end:
+		db	1bh, '[1;1H'
+csi2j_clrhome_str_end:
+;
 csi6n_str	db	1bh, '[6n'
 csi6n_str_end:
-csi6n_index	dw	0
+
+csi2j_index	db	0
+csi6n_index	db	0
 
 
 ;--------------------------------------
@@ -783,9 +847,115 @@ kbuf_isfull:
 		ret
 %endif	; end of not defined NEC98
 
+%ifdef IBMPC
+;--------------------------------------
+; injecting keystrokes into keyboard bios (for IBM PC)
+
+%define IBM_ENH_KBIOS	10000000b
+
+NewKB_ibmpc:
+		test	byte [cs: ibm_kbd_type], IBM_ENH_KBIOS
+		jz	.f00
+		cmp	ah, 10h
+		je	ibm_kb_get
+		cmp	ah, 11h
+		je	ibm_kb_peek
+.f00:
+		cmp	ah, 0
+		je	ibm_kb_get
+		cmp	ah, 1
+		je	ibm_kb_peek
+newkb_ibmpc_fallback:
+		jmp	short ibm_kb_fallback
+
+ibm_kb_get:
+		push	ax
+		call	push_aux_to_kbuf
+		cmp	byte [cs: allow_aux_in], 0
+		je	ibm_kb_fallback_ax
+		call	kbuf_peekandget
+		jc	ibm_kb_fallback_ax
+		add	sp, 2		; drop pushed ax
+		xor	ah, ah
+		iret
+
+ibm_kb_fallback_ax:
+		pop	ax
+ibm_kb_fallback:
+		jmp	far [cs: org_kbios]
+
+
+ibm_kb_peek:
+		push	ax
+		call	push_aux_to_kbuf
+		cmp	byte [cs: allow_aux_in], 0
+		je	ibm_kb_fallback_ax
+		call	kbuf_peek
+		jc	ibm_kb_fallback_ax
+		push	bp
+		mov	bp, sp
+		; word [bp+0]  bp
+		; word [bp+2]  ax
+		; dword [bp+4] return cs:ip
+		; word [bp+8]  return flags
+		and	byte [bp + 8], 0bfh	; clear flags bit6 (ZF=0)
+		xor	ah, ah
+		mov	[bp + 2], ax
+		pop	bp
+		pop	ax
+		iret
+
+ibm_kbd_type	db	0
+
+%endif	; end of IBMPC
 
 		align	16
 tsr_bottom:
+;=============================================================================
+
+; machine specific codes 
+%ifdef IBMPC
+machine_specific_setup_init:
+		push	ax
+		; check enhanced keyboard function supported
+		; see FIND_SYS_TYPE in MS-DOS KEYB source
+		; (at https://github.com/microsoft/MS-DOS/blob/main/v4.0/src/CMD/KEYB/COMMSUBS.ASM)
+		mov	ah, 92h
+		int	16h
+		cmp	ah, 80h
+		ja	.l2
+		or	byte [ibm_kbd_type], IBM_ENH_KBIOS
+.l2:
+		pop	ax
+		clc
+		ret
+
+machine_specific_setup_tsr:
+		push	ax
+		mov	ax, 3516h
+		int	21h
+		mov	word [org_kbios], bx
+		mov	word [org_kbios + 2], es
+		mov	ax, 2516h
+		mov	dx, NewKB_ibmpc
+		int	21h
+		pop	ax
+		clc
+		ret
+
+%elifdef NEC98
+machine_specific_setup_init:
+machine_specific_setup_tsr:
+		clc
+		ret
+%elifdef GENDOS
+machine_specific_setup_init:
+machine_specific_setup_tsr:
+		clc
+		ret
+%endif
+
+
 ;--------------------------------------
 
 struc optparam
@@ -813,6 +983,7 @@ opt_T:		optentry 'T', 0
 opt_N:		optentry 'N', 1
 opt_C:		optentry 'C', 0
 opt_X:		optentry 'X', 0
+opt_J:		optentry 'J', 1
 opttable_end:
 %define opttable_count	((opttable_end - opttable) / optparam_size)
 
@@ -1345,6 +1516,7 @@ init_common:
 		mov	[dev_api_cdecl + 2], cs
 		call	mygetopt
 		call	copy_open_devname
+		call	machine_specific_setup_init
 		ret
 
 init_device_tsr:
@@ -1377,6 +1549,7 @@ init_device_tsr:
 
 		call	set_device_options
 		call	hook_condev
+		call	machine_specific_setup_tsr
 
 		mov	ax, 3529h
 		int	21h
